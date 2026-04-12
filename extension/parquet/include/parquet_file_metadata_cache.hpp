@@ -23,6 +23,10 @@ public:
 	ParquetFileMetadataCache(unique_ptr<duckdb_parquet::FileMetaData> file_metadata, CachingFileHandle &handle,
 	                         unique_ptr<GeoParquetFileMetadata> geo_metadata,
 	                         unique_ptr<FileCryptoMetaData> crypto_metadata, idx_t footer_size);
+	//! Constructor for persistent cache reconstruction (without a live CachingFileHandle)
+	ParquetFileMetadataCache(unique_ptr<duckdb_parquet::FileMetaData> file_metadata, const string &version_tag,
+	                         timestamp_t last_modified, unique_ptr<GeoParquetFileMetadata> geo_metadata,
+	                         unique_ptr<FileCryptoMetaData> crypto_metadata, idx_t footer_size);
 	~ParquetFileMetadataCache() override = default;
 
 	//! Parquet file metadata

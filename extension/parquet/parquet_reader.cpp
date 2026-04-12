@@ -9,6 +9,7 @@
 #include "reader/list_column_reader.hpp"
 #include "parquet_crypto.hpp"
 #include "parquet_file_metadata_cache.hpp"
+#include "parquet_metadata_provider.hpp"
 #include "parquet_statistics.hpp"
 #include "mbedtls_wrapper.hpp"
 #include "reader/row_number_column_reader.hpp"
@@ -882,21 +883,52 @@ ParquetReader::ParquetReader(ClientContext &context_p, OpenFileInfo file_p, Parq
 		if (footer_entry != open_options.end()) {
 			footer_size = UBigIntValue::Get(footer_entry->second);
 		}
+		// Check for a pre-serialized footer blob (e.g., from DuckLake metadata)
+		auto footer_blob_entry = open_options.find("footer_blob");
+		if (footer_blob_entry != open_options.end()) {
+			auto blob_str = StringValue::Get(footer_blob_entry->second);
+			auto mem_buffer = duckdb_base_std::make_shared<duckdb_apache::thrift::transport::TMemoryBuffer>(
+			    reinterpret_cast<uint8_t *>(const_cast<char *>(blob_str.data())),
+			    static_cast<uint32_t>(blob_str.size()),
+			    duckdb_apache::thrift::transport::TMemoryBuffer::OBSERVE);
+			duckdb_apache::thrift::protocol::TCompactProtocolT<duckdb_apache::thrift::transport::TMemoryBuffer>
+			    protocol(mem_buffer);
+			auto file_metadata = make_uniq<duckdb_parquet::FileMetaData>();
+			file_metadata->read(&protocol);
+			auto crypto_md = make_uniq<FileCryptoMetaData>();
+			auto geo_md = GeoParquetFileMetadata::TryRead(*file_metadata, context_p);
+			idx_t fsize = footer_size.IsValid() ? footer_size.GetIndex() : 0;
+			metadata = make_shared_ptr<ParquetFileMetadataCache>(
+			    std::move(file_metadata), *file_handle, std::move(geo_md), std::move(crypto_md), fsize);
+		}
 	}
 
 	// If metadata cached is disabled
 	// or if this file has cached metadata
 	// or if the cached version already expired
-	if (!metadata_p) {
-		if (!MetadataCacheEnabled(context_p)) {
-			metadata = LoadMetadata(context_p, allocator, *file_handle, parquet_options.encryption_config,
-			                        encryption_util, footer_size);
-		} else {
-			metadata = ObjectCache::GetObjectCache(context_p).Get<ParquetFileMetadataCache>(file.path);
-			if (!metadata || !metadata->IsValid(*file_handle)) {
+	if (!metadata_p && !metadata) {
+		// Check for an external persistent metadata provider (e.g., parquet_cache extension)
+		auto metadata_provider =
+		    ObjectCache::GetObjectCache(context_p).Get<ParquetMetadataProvider>(ParquetMetadataProvider::CACHE_KEY);
+		if (metadata_provider) {
+			metadata = metadata_provider->TryGetMetadata(context_p, file, *file_handle);
+		}
+
+		if (!metadata) {
+			if (!MetadataCacheEnabled(context_p)) {
 				metadata = LoadMetadata(context_p, allocator, *file_handle, parquet_options.encryption_config,
 				                        encryption_util, footer_size);
-				ObjectCache::GetObjectCache(context_p).Put(file.path, metadata);
+			} else {
+				metadata = ObjectCache::GetObjectCache(context_p).Get<ParquetFileMetadataCache>(file.path);
+				if (!metadata || !metadata->IsValid(*file_handle)) {
+					metadata = LoadMetadata(context_p, allocator, *file_handle, parquet_options.encryption_config,
+					                        encryption_util, footer_size);
+					ObjectCache::GetObjectCache(context_p).Put(file.path, metadata);
+				}
+			}
+			// Notify the provider so it can persist the freshly loaded metadata
+			if (metadata_provider) {
+				metadata_provider->OnMetadataLoaded(context_p, file, *file_handle, metadata);
 			}
 		}
 	} else {

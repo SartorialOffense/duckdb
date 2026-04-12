@@ -15,6 +15,15 @@ ParquetFileMetadataCache::ParquetFileMetadataCache(unique_ptr<duckdb_parquet::Fi
       last_modified(handle.GetLastModifiedTime()), version_tag(handle.GetVersionTag()) {
 }
 
+ParquetFileMetadataCache::ParquetFileMetadataCache(unique_ptr<duckdb_parquet::FileMetaData> file_metadata,
+                                                   const string &version_tag_p, timestamp_t last_modified_p,
+                                                   unique_ptr<GeoParquetFileMetadata> geo_metadata,
+                                                   unique_ptr<FileCryptoMetaData> crypto_metadata, idx_t footer_size)
+    : metadata(std::move(file_metadata)), geo_metadata(std::move(geo_metadata)),
+      crypto_metadata(std::move(crypto_metadata)), footer_size(footer_size), validate(true),
+      last_modified(last_modified_p), version_tag(version_tag_p) {
+}
+
 string ParquetFileMetadataCache::ObjectType() {
 	return "parquet_metadata";
 }

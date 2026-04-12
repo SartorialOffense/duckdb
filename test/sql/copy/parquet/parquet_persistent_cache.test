@@ -1,0 +1,117 @@
+# name: test/sql/copy/parquet/parquet_persistent_cache.test
+# description: Test persistent parquet metadata cache
+# group: [parquet]
+
+require parquet
+
+require parquet_cache
+
+# Test 1: Cache population
+statement ok
+SET parquet_persistent_cache_path='{TEMP_DIR}/test_cache.duckdb';
+
+query II
+SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/cache/cache1.parquet')
+----
+1	hello
+
+query I
+SELECT count(*) FROM parquet_cache_info()
+----
+1
+
+# Test 2: Read a second file, verify both cached
+query II
+SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/cache/cache2.parquet')
+----
+0	10
+1	20
+2	30
+
+query I
+SELECT count(*) FROM parquet_cache_info()
+----
+2
+
+# Test 3: Verify cached metadata is used correctly on re-read
+query II
+SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/cache/cache1.parquet')
+----
+1	hello
+
+query II
+SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/cache/cache2.parquet')
+----
+0	10
+1	20
+2	30
+
+# Test 4: Cache info shows correct metadata
+query III
+SELECT file_path LIKE '%cache1.parquet', num_rows, num_row_groups FROM parquet_cache_info() WHERE file_path LIKE '%cache1%'
+----
+true	1	1
+
+query III
+SELECT file_path LIKE '%cache2.parquet', num_rows, num_row_groups FROM parquet_cache_info() WHERE file_path LIKE '%cache2%'
+----
+true	3	1
+
+# Test 5: parquet_cache_clear() with file argument
+query I
+SELECT * FROM parquet_cache_clear('{DATA_DIR}/parquet-testing/cache/cache1.parquet')
+----
+1
+
+query I
+SELECT count(*) FROM parquet_cache_info()
+----
+1
+
+# Test 6: parquet_cache_clear() all
+query I
+SELECT * FROM parquet_cache_clear()
+----
+1
+
+query I
+SELECT count(*) FROM parquet_cache_info()
+----
+0
+
+# Test 7: Cache invalidation - overwrite file and verify new data is returned
+
+# writer requires vector_size >= 64
+require vector_size 64
+
+statement ok
+COPY (SELECT 99 AS i, 'changed'::BLOB AS j) TO '{TEMP_DIR}/cached_test.parquet' (FORMAT 'parquet')
+
+query II
+SELECT * FROM parquet_scan('{TEMP_DIR}/cached_test.parquet')
+----
+99	changed
+
+query I
+SELECT count(*) FROM parquet_cache_info()
+----
+1
+
+# Overwrite with different data
+statement ok
+COPY (SELECT 42 AS i, 'new_data'::BLOB AS j) TO '{TEMP_DIR}/cached_test.parquet' (FORMAT 'parquet')
+
+# Should return new data (cache invalidated by changed version tag)
+query II
+SELECT * FROM parquet_scan('{TEMP_DIR}/cached_test.parquet')
+----
+42	new_data
+
+# Test 8: Disabling cache by resetting path
+statement ok
+SET parquet_persistent_cache_path='';
+
+query I
+SELECT count(*) FROM parquet_cache_info()
+----
+0

@@ -864,6 +864,17 @@ ParquetReader::ParquetReader(ClientContext &context_p, OpenFileInfo file_p, Parq
     : BaseFileReader(std::move(file_p)), fs(CachingFileSystem::Get(context_p)),
       allocator(BufferAllocator::Get(context_p)), parquet_options(std::move(parquet_options_p)) {
 
+	// Check the persistent metadata provider BEFORE opening the file.
+	// If we get a cache hit with TTL=-1, the provider injects file_size/etag/last_modified
+	// into extended_info->options so httpfs can skip the HEAD request entirely.
+	if (!metadata_p) {
+		auto provider =
+		    ObjectCache::GetObjectCache(context_p).Get<ParquetMetadataProvider>(ParquetMetadataProvider::CACHE_KEY);
+		if (provider) {
+			metadata = provider->TryGetMetadataBeforeOpen(context_p, file);
+		}
+	}
+
 	file_handle = fs.OpenFile(context_p, file, FileFlags::FILE_FLAGS_READ);
 	if (!file_handle->CanSeek()) {
 		throw NotImplementedException(
@@ -932,11 +943,16 @@ ParquetReader::ParquetReader(ClientContext &context_p, OpenFileInfo file_p, Parq
 				metadata_provider->OnMetadataLoaded(context_p, file, *file_handle, metadata);
 			}
 		}
-	} else {
+	} else if (metadata_p) {
 		metadata = std::move(metadata_p);
 		if (parquet_options.encryption_config) {
 			encryption_util = context_p.db->GetEncryptionUtil(true);
 		}
+	}
+	// If metadata was provided by the persistent cache (TryGetMetadataBeforeOpen),
+	// reconstruct GeoParquet metadata from the cached FileMetaData if needed.
+	if (metadata && !metadata->geo_metadata && metadata->metadata) {
+		metadata->geo_metadata = GeoParquetFileMetadata::TryRead(*metadata->metadata, context_p);
 	}
 	InitializeSchema(context_p);
 }

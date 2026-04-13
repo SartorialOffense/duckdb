@@ -168,6 +168,19 @@ void DuckDBMetadataStore::Clear() {
 	connection->Query("DELETE FROM parquet_metadata_cache");
 }
 
+idx_t DuckDBMetadataStore::GetFileSize(const string &file_path) {
+	auto result = connection->Query(
+	    "SELECT file_size FROM parquet_metadata_cache WHERE file_path = $1", file_path);
+	if (result->HasError()) {
+		return 0;
+	}
+	auto &materialized = result->Cast<MaterializedQueryResult>();
+	if (materialized.RowCount() == 0) {
+		return 0;
+	}
+	return materialized.GetValue(0, 0).GetValue<idx_t>();
+}
+
 idx_t DuckDBMetadataStore::EntryCount() {
 	auto result = connection->Query("SELECT count(*) FROM parquet_metadata_cache");
 	if (result->HasError() || result->RowCount() == 0) {

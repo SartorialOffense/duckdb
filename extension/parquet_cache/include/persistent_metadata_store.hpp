@@ -35,6 +35,9 @@ public:
 	//! Clear all cache entries.
 	virtual void Clear() = 0;
 
+	//! Get the cached file size for a path, or 0 if not found.
+	virtual idx_t GetFileSize(const string &file_path) = 0;
+
 	//! Get the number of cached entries.
 	virtual idx_t EntryCount() = 0;
 

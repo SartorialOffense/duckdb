@@ -27,6 +27,7 @@ public:
 
 	void Remove(const string &file_path) override;
 	void Clear() override;
+	idx_t GetFileSize(const string &file_path) override;
 	idx_t EntryCount() override;
 	vector<CacheEntryInfo> GetAllEntries() override;
 

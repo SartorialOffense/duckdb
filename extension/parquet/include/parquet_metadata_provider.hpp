@@ -34,7 +34,18 @@ public:
 
 	~ParquetMetadataProvider() override = default;
 
+	//! Try to retrieve cached metadata BEFORE the file is opened.
+	//! Called before fs.OpenFile() — no file handle available, no validation possible.
+	//! Only returns metadata when TTL-based trust is enabled (e.g., TTL=-1).
+	//! If this returns non-null, the parquet reader injects file_size and
+	//! validate_external_file_cache=false into extended_info to skip the HEAD request.
+	virtual shared_ptr<ParquetFileMetadataCache> TryGetMetadataBeforeOpen(ClientContext &context,
+	                                                                      const OpenFileInfo &file) {
+		return nullptr;
+	}
+
 	//! Try to retrieve cached metadata for the given file.
+	//! Called after the file is opened — can use the file handle for ETag/timestamp validation.
 	//! Returns nullptr if not found or invalid.
 	virtual shared_ptr<ParquetFileMetadataCache> TryGetMetadata(ClientContext &context, const OpenFileInfo &file,
 	                                                            CachingFileHandle &handle) = 0;

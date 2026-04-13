@@ -75,6 +75,62 @@ class PersistentCacheMetadataProvider : public ParquetMetadataProvider {
 public:
 	PersistentCacheMetadataProvider() = default;
 
+	~PersistentCacheMetadataProvider() override {
+		// Close the cache DB before the host DuckDB finishes shutting down.
+		// This avoids static destruction order issues with the global ParquetCacheState.
+		auto &state = GetCacheState();
+		lock_guard<mutex> guard(state.lock);
+		state.store.reset();
+		state.current_path.clear();
+	}
+
+	shared_ptr<ParquetFileMetadataCache> TryGetMetadataBeforeOpen(ClientContext &context,
+	                                                              const OpenFileInfo &file) override {
+		// Only usable with TTL=-1 (always trust cache) since we can't validate without a file handle
+		auto ttl = GetCacheTTL(context);
+		if (ttl != -1) {
+			return nullptr;
+		}
+
+		auto cache_path = GetCachePath(context);
+		if (cache_path.empty()) {
+			return nullptr;
+		}
+
+		auto store = GetOrCreateStore(cache_path, GetCacheMaxEntries(context));
+		if (!store) {
+			return nullptr;
+		}
+
+		try {
+			// Pass empty etag and zero timestamp — skip validation
+			auto result = store->Get(file.path, "", timestamp_t(0));
+			if (result) {
+				// Inject file_size, etag, and last_modified into extended_info.
+				// httpfs requires all three to set initialized=true and skip the HEAD.
+				// Values don't need to be real — TTL=-1 means we trust the cache.
+				auto file_size = store->GetFileSize(file.path);
+				if (file_size > 0) {
+					auto &mutable_file = const_cast<OpenFileInfo &>(file);
+					if (!mutable_file.extended_info) {
+						mutable_file.extended_info = make_shared_ptr<ExtendedOpenFileInfo>();
+					}
+					auto &opts = mutable_file.extended_info->options;
+					opts["file_size"] = Value::UBIGINT(file_size);
+					if (opts.find("etag") == opts.end()) {
+						opts["etag"] = Value("");
+					}
+					if (opts.find("last_modified") == opts.end()) {
+						opts["last_modified"] = Value::TIMESTAMP(timestamp_t(0));
+					}
+				}
+			}
+			return result;
+		} catch (...) {
+			return nullptr;
+		}
+	}
+
 	shared_ptr<ParquetFileMetadataCache> TryGetMetadata(ClientContext &context, const OpenFileInfo &file,
 	                                                    CachingFileHandle &handle) override {
 		auto cache_path = GetCachePath(context);
